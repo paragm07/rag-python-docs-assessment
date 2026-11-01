@@ -1,0 +1,33 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	retrieve(retrieve)
+	grade(grade)
+	recover(recover)
+	generate(generate)
+	verify(verify)
+	refuse(refuse)
+	finish(finish)
+	finish_unverified(finish_unverified)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> retrieve;
+	generate -.-> refuse;
+	generate -.-> verify;
+	grade -.-> generate;
+	grade -.-> recover;
+	grade -.-> refuse;
+	recover --> retrieve;
+	retrieve --> grade;
+	verify -.-> finish;
+	verify -.-> finish_unverified;
+	verify -.-> generate;
+	finish --> __end__;
+	finish_unverified --> __end__;
+	refuse --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

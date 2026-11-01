@@ -1,0 +1,47 @@
+# All tunables live here. Code reads values from this file; nothing is hard-coded.
+
+corpus:
+  dir: corpus
+  documents:
+    - name: python-3.12.7
+      version: "3.12.7"
+      source: "https://github.com/python/cpython/tree/v3.12.7/Doc/library"
+      files: ["json.rst", "string.rst", "datetime.rst", "urllib.request.rst"]
+    - name: requests-2.32.3
+      version: "2.32.3"
+      source: "https://github.com/psf/requests/tree/v2.32.3/docs"
+      files: ["api.rst", "quickstart.rst", "advanced.rst"]
+
+index:
+  path: data/index/ragdocs.sqlite
+  max_chunk_chars: 1200     # prose chunks are grouped up to this size
+  max_entry_chars: 2000     # a function entry longer than this is split by paragraph
+
+retrieval:
+  top_k: 8                  # passages returned per attempt
+  rrf_k: 60                 # reciprocal rank fusion constant
+  use_dense: true           # hybrid BM25 + dense. Needs embeddings in the index.
+  widen_top_k: 16           # top_k used on the second recovery attempt
+
+models:
+  llm:
+    provider: ollama
+    model: "qwen2.5:3b-instruct"
+    base_url: "http://localhost:11434"
+    temperature: 0.0
+    num_ctx: 4096
+    timeout_s: 90
+  embedder:
+    provider: ollama
+    model: "nomic-embed-text"
+    base_url: "http://localhost:11434"
+    timeout_s: 60
+
+workflow:
+  max_retries: 2            # corrective loops (rewrite / widen retrieval) per request
+  max_verify_retries: 1     # regenerations after a failed verification
+  max_passages_to_model: 6  # retained passages shown to the generator
+
+api:
+  max_question_chars: 500
+  request_timeout_s: 120    # hard limit on one /query; returns 504 if exceeded

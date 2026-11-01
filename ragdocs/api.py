@@ -4,10 +4,15 @@
 
 POST /query      a question in, an answer with citations out (refusals are 200)
 GET  /documents  the indexed documents with version, source, chunk count, time
+
+Each /query appends its node-by-node trace to the file named by api.trace_log.
 """
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
+import json
+import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -92,7 +97,6 @@ app = FastAPI(title="Python docs RAG assistant", lifespan=lifespan)
 @app.exception_handler(Exception)
 async def unhandled(request: Request, exc: Exception) -> JSONResponse:
     # No stack traces to clients. The detail goes to the server log.
-    import logging
     logging.getLogger("ragdocs").exception("unhandled error on %s", request.url.path)
     return _error(500, "internal_error", "Unexpected server error.")
 
@@ -139,7 +143,7 @@ async def query(request: Request):
         return _error(503, "model_unavailable", str(exc))
 
     index: Index = STATE["index"]
-    return QueryOut(
+    out = QueryOut(
         request_id=request_id,
         answer=result["answer"],
         refused=result["refused"],
@@ -151,6 +155,21 @@ async def query(request: Request):
         termination=result["termination"],
         latency_s=round(time.perf_counter() - started, 3),
     )
+    _write_trace(request_id, question, out, result.get("trace", []))
+    return out
+
+
+def _write_trace(request_id: str, question: str, out: QueryOut, trace: list[dict]) -> None:
+    """Append one line per request: the node visits with their timings. Never fails the request."""
+    path = resolve(STATE["cfg"], STATE["cfg"]["api"]["trace_log"])
+    line = {"request_id": request_id, "time": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+            "question": question, "termination": out.termination, "latency_s": out.latency_s, "trace": trace}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except OSError:
+        logging.getLogger("ragdocs").warning("could not write trace to %s", path)
 
 
 @app.get("/documents")

@@ -2,3 +2,4 @@ __pycache__/
 .pytest_cache/
 data/index/
 *.pyc
+data/api_traces.jsonl

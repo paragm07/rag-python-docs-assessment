@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RAG over Python docs: report</title>
+<style>
+  @page { size: A4; margin: 14mm 15mm 14mm 15mm; }
+  :root { --ink: #1a1a1a; --muted: #555; --rule: #c9c9c9; --tint: #f3f3f3; }
+  body { font: 9.4pt/1.38 "Segoe UI", Arial, sans-serif; color: var(--ink); background: #fff; margin: 0; }
+  h1 { font-size: 15pt; margin: 0 0 2px; }
+  h2 { font-size: 11pt; margin: 11px 0 4px; padding-bottom: 2px; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 9.6pt; margin: 8px 0 2px; }
+  p { margin: 3px 0 5px; }
+  ul { margin: 2px 0 5px 16px; padding: 0; } li { margin: 1px 0; }
+  .sub { color: var(--muted); margin-bottom: 6px; }
+  table { border-collapse: collapse; width: 100%; margin: 4px 0 6px; font-size: 8.4pt; }
+  th, td { border: 1px solid var(--rule); padding: 2px 5px; text-align: left; vertical-align: top; }
+  th { background: var(--tint); }
+  td.n, th.n { text-align: right; white-space: nowrap; }
+  pre { font: 7.6pt/1.3 Consolas, "Courier New", monospace; background: var(--tint); padding: 4px 6px;
+        margin: 3px 0 6px; white-space: pre-wrap; border: 1px solid var(--rule); }
+  code { font: 8.4pt Consolas, "Courier New", monospace; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pb { break-before: page; }
+  .note { color: var(--muted); font-size: 8.4pt; }
+</style>
+</head>
+<body>
+
+<h1>RAG Q&amp;A assistant over Python documentation: report</h1>
+<div class="sub">Corpus: CPython 3.12.7 library docs (json, string, datetime, urllib.request) and requests 2.32.3
+(api, quickstart, advanced). Models: qwen2.5:3b-instruct (Q4_K_M) and nomic-embed-text, served by Ollama.
+Every number below comes from <code>python evaluate.py</code>, offline, on one laptop
+(i5-9300H, 4 cores, 8 GB, GTX 1650). Quality numbers: <code>config.yaml</code>, where Ollama used the GPU. Target
+latency: <code>config.cpu.yaml</code>, CPU only, 4 threads.</div>
+
+<h2>1. Architecture and the reasoning behind it</h2>
+<pre>ingest.py   reST files -> structure-aware chunks -> nomic-embed-text -> SQLite (text, metadata, float32 vectors)
+
+/query -> retrieve -> grade --sufficient--> generate --answer--> verify --pass--> finish            [answered]
+             ^         |                       |                   |--fail, bounded--> generate (told why)
+             |         |--insufficient,        |--NOT_IN_DOCS-->    |--fail, limit----> finish_unverified
+             |         |  retries left         refuse               [refused_unverified, failure disclosed]
+             +-- recover (rewrite query; next retrieve skips every passage already seen)
+                       |--insufficient, no retries left--> refuse [retry_limit / refused_no_context]</pre>
+<p><b>Retrieval</b> is hybrid: BM25 over the chunk text plus a section/entry prefix, and cosine similarity over
+nomic embeddings, fused with weighted reciprocal rank fusion (BM25 weight 2, dense 1, k=60). Reference docs are
+full of exact tokens (<code>%j</code>, <code>sort_keys</code>, <code>r.json()</code>) that a 137M embedding model
+cannot separate; BM25 can. Dense search still finds paraphrased questions. Vectors live in SQLite with numpy
+search: 582 chunks need no ANN index, and one file is easy to rebuild and ship offline.</p>
+<p><b>Grading</b> is per passage and evidence-based (section 4). <b>Generation</b> sees only retained passages,
+labelled P1..Pn, plus the grader's evidence. <b>Verification</b> is two-stage: deterministic checks first
+(citations must be retained passages; every backticked identifier must appear in a cited passage), then an LLM
+check that each claim is supported. Every model call is constrained by a JSON schema through Ollama structured
+outputs, so replies always parse.</p>
+<p><b>Rejected:</b> (1) one grader call over all 8 passages. It was my first design; with a 3B model it kept the
+gold passage on only 31% of answerable questions (it often listed the right passage as relevant and still said
+"insufficient"). (2) A yes/no relevance grader per passage: better (gold kept on 10 of 15 retrieved), but it
+still said "no" to passages that plainly answer. (3) Widening retrieval to 16 passages on the last retry: the
+prompt overflowed the 4,096-token context and Ollama silently cut the instructions. (4) A cross-encoder reranker:
+one more model to ship, and it does not solve the grader problem. (5) Chroma/FAISS: unnecessary at this size.</p>
+
+<h2>2. State schema</h2>
+<table>
+<tr><th>Field</th><th>Written by</th><th>Read by</th><th>Why it exists</th></tr>
+<tr><td><code>question</code></td><td>caller</td><td>all nodes</td><td>The original question; the grader and verifier always judge against it, never against a rewrite.</td></tr>
+<tr><td><code>query</code></td><td>caller, recover</td><td>retrieve, recover, refuse</td><td>The current search string. Separate from <code>question</code> so a rewrite cannot change what is being answered.</td></tr>
+<tr><td><code>retries</code></td><td>recover</td><td>route_after_grade, refuse</td><td>Bounds the corrective loop (<code>max_retries</code>=2); returned to the caller.</td></tr>
+<tr><td><code>candidates</code></td><td>retrieve</td><td>grade</td><td>This attempt's top-8, excluding everything seen before.</td></tr>
+<tr><td><code>retrieved</code></td><td>retrieve</td><td>retrieve, refuse</td><td>All chunk ids seen, in rank order. Lets a retry search deeper instead of re-grading; returned as <code>retrieved</code>.</td></tr>
+<tr><td><code>sufficient</code></td><td>grade</td><td>route_after_grade, refuse</td><td>The explicit sufficiency decision: at least one passage carries verified evidence.</td></tr>
+<tr><td><code>retained</code></td><td>grade</td><td>generate, verify</td><td>The only passages the generator may see and cite.</td></tr>
+<tr><td><code>evidence</code></td><td>grade</td><td>generate</td><td>The text the grader copied from each retained passage: why it was kept, and a pointer for the generator.</td></tr>
+<tr><td><code>answer</code></td><td>generate, refuse, finish_unverified</td><td>route_after_generate, verify, finish_unverified</td><td>Empty after generate means "docs do not answer", which routes to refuse.</td></tr>
+<tr><td><code>citations</code></td><td>generate, refuse</td><td>verify</td><td>Chunk ids the answer relies on; must be a subset of <code>retained</code>.</td></tr>
+<tr><td><code>verified</code></td><td>verify</td><td>route_after_verify, refuse</td><td>Verification result; <code>null</code> if verification was never reached.</td></tr>
+<tr><td><code>verify_failures</code></td><td>verify</td><td>route_after_verify, generate</td><td>Bounds regeneration (<code>max_verify_retries</code>=1) and tells generate to include the failure reason.</td></tr>
+<tr><td><code>note</code></td><td>grade, recover, generate, verify</td><td>generate</td><td>Last decision's reason: the trace line, and the failure reason fed back on regeneration.</td></tr>
+<tr><td><code>refused</code>, <code>termination</code></td><td>refuse, finish, finish_unverified</td><td>caller</td><td>The outcome. Only the three terminal nodes write them, so every END has both set.</td></tr>
+</table>
+<p><b>How each path ends.</b> <code>answered</code>: verification passed. <code>refused_unverified</code>: verification
+failed twice; the answer is returned prefixed with "Verification failed for this answer" and <code>verified=false</code>.
+<code>refused_no_answer</code>: the grader kept passages but the generator found no answer in them.
+<code>retry_limit</code>: no evidence after 3 attempts (24 distinct passages). <code>refused_no_context</code>:
+nothing retrieved at all. <code>graph_limit</code>: LangGraph's recursion limit (25 steps, longest legal path 15)
+as an independent safety net; never reached. The API adds <code>timeout</code> (HTTP 504) and model-down (503).
+Every loop has a counter in state with a bound from config, so the worst case is fixed: 3&times;8 grader calls +
+2 rewrites + 2 generations + 2 verifications = 30 model calls. Tests drive a scripted model through every path,
+including a model that always rewrites to an empty query.</p>
+
+<h2>3. Chunking and retrieval</h2>
+<p>The parser reads reStructuredText directly: it is the source the HTML is built from, and it keeps the
+structure (section underlines, <code>.. function::</code> directives, grid tables, <code>.. versionchanged::</code>)
+that HTML flattens. Three chunk types: <b>entry</b> (one API directive with its whole body; an entry over 2,000
+characters is split by paragraph and every part repeats the signature), <b>table</b> (a grid table with its
+caption; a table over 1,200 characters is split only between rows and every piece repeats the caption and the
+header row), and <b>prose</b> (paragraphs of one section, packed to 1,200 characters, never split mid-paragraph).
+Every chunk records file, section path, line range, entry name and its version notes. 582 chunks: 291 entry,
+250 prose, 41 table; 93 carry a version note. Citations are <code>file:start-end (section path)</code>.</p>
+<p><b>Tables are read as rows.</b> A grid row spans several lines between <code>|</code> borders. For embedding,
+BM25 and every prompt, each row is rewritten as <code>Header: cell; ...</code>. The stored text, line numbers and
+citations stay on the source.</p>
+<div class="two">
+<div><h3>Table example: datetime.rst:2425-2427</h3>
+<pre>The following is a list of all the format codes that the 1989 C
+standard requires, and these work on all platforms ...
++-----------+--------------------------------+---------------------+
+| Directive | Meaning                        | Example             |
++===========+================================+=====================+
+| ``%j``    | Day of the year as a           | 001, 002, ..., 366  |
+|           | zero-padded decimal number.    |                     |
+as the model sees it:
+Directive: ``%j``; Meaning: Day of the year as a zero-padded
+decimal number.; Example: 001, 002, ..., 366; Notes: \(9)</pre></div>
+<div><h3>Function-entry example: json.rst:137-206, part 2</h3>
+<pre>function:: dump(obj, fp, *, skipkeys=False, ensure_ascii=True,
+  ..., indent=None, separators=None, default=None,
+  sort_keys=False, **kw)  (part 2)
+   .. versionchanged:: 3.2
+      Allow strings for *indent* in addition to integers.
+   If specified, *separators* should be an
+   ``(item_separator, key_separator)`` tuple. ...
+metadata: entry=dump, chunk_type=entry, version_notes=
+ [versionchanged 3.2 ..., versionchanged 3.4 ..., versionchanged 3.6 ...]</pre></div>
+</div>
+<p><b>What I measured.</b> Rank of the best gold chunk for the 16 answerable questions (gold matching: a chunk
+matches when it is from the gold file and contains the gold quote after whitespace normalisation; a test confirms
+every quote sits inside one chunk).</p>
+<table>
+<tr><th>Configuration</th><th class="n">hit@5</th><th class="n">hit@8</th><th>Gold ranks q01..q16</th></tr>
+<tr><td>Before: format-code table as one 8,068-char chunk, plain RRF</td><td class="n">11/16</td><td class="n">14/16</td><td>2 1 1 1 1 1 1 1 8 6 9 8 16 2 1 3</td></tr>
+<tr><td>Tables split by rows, BM25 weight 2</td><td class="n">13/16</td><td class="n">15/16</td><td>3 1 1 1 1 1 1 1 5 4 8 8 14 1 1 3</td></tr>
+<tr><td>+ rows linearised, weight 1</td><td class="n">13/16</td><td class="n">15/16</td><td>3 1 1 1 1 1 1 1 8 1 5 7 11 2 1 3</td></tr>
+<tr><td><b>+ rows linearised, weight 2 (shipped)</b></td><td class="n"><b>14/16</b></td><td class="n"><b>16/16</b></td><td>3 1 1 1 1 1 1 1 5 1 3 8 8 1 1 3</td></tr>
+<tr><td>+ rows linearised, weight 3</td><td class="n">15/16</td><td class="n">16/16</td><td>3 1 1 1 1 1 1 1 4 1 3 8 5 1 1 3</td></tr>
+</table>
+<p class="note">The weight was chosen on these same 16 questions; there is no held-out set, so treat the
+difference between 2 and 3 as noise. I kept 2, the smaller change from plain fusion. Dense alone ranks the %p row
+95th: the embedding cannot tell format codes apart.</p>
+
+<h2>4. Grading, recovery, refusal and verification</h2>
+<p><b>Sufficiency.</b> The grader sees one passage at a time and must copy, word for word, the sentence or table
+row that answers the question, or return an empty string. Code then checks that the first 60 characters of the
+copy appear in the passage (after folding whitespace and reST markup). A passage is retained only if it passes,
+and context is sufficient when at least one passage is retained. Small models are better at extracting than at
+judging, and the check means an answer from memory or a paraphrase cannot make context sufficient (a test feeds
+a fluent but uncopied claim about HTTP/2 and expects a refusal). Grading stops once 3 passages carry evidence.</p>
+<p><b>Recovery.</b> When nothing carries evidence: rewrite the query (if the model repeats it, fall back to the
+question's content words), then retrieve the next 8 passages not yet seen. Two retries, so up to 24 distinct
+passages. <b>Refusal</b> names the query and the number of passages checked. <b>Verification</b> as in section 1.
+On failure the generator is told why and tries once more; if it fails again, the answer goes out with the failure
+disclosed.</p>
+<table>
+<tr><th>Node</th><th class="n">Visits / request</th><th class="n">Mean s, GTX 1650</th><th class="n">Mean s, CPU 4 threads</th><th>Model calls per visit</th></tr>
+<tr><td>retrieve</td><td class="n">1.20</td><td class="n">0.4</td><td class="n">0.6</td><td>0 (one query embedding)</td></tr>
+<tr><td>grade</td><td class="n">1.20</td><td class="n">13.7</td><td class="n">53.4</td><td>3&ndash;8, one per passage until 3 carry evidence</td></tr>
+<tr><td>recover</td><td class="n">0.20</td><td class="n">0.9</td><td class="n">3.1</td><td>1</td></tr>
+<tr><td>generate</td><td class="n">0.95</td><td class="n">4.5</td><td class="n">26.2</td><td>1</td></tr>
+<tr><td>verify</td><td class="n">0.70</td><td class="n">1.2</td><td class="n">4.6</td><td>0&ndash;1 (LLM only if the deterministic checks pass)</td></tr>
+</table>
+<p class="note">From <code>data/traces.jsonl</code> and <code>data/latency/cpu_4thread/traces.jsonl</code>. Grading is
+about three quarters of request time on both: the price of one passage per call. Verification is cheap because
+it sees only the cited passages.</p>
+
+<h2>5. Evaluation results</h2>
+<p>Quality numbers come from the run in <code>data/results.jsonl</code> (<code>config.yaml</code>; on this machine
+Ollama placed both models on a GTX 1650, offline). The CPU-only run (<code>config.cpu.yaml</code>, 4 threads,
+<code>data/latency/cpu_4thread/</code>) is the target-hardware latency measurement; its quality numbers are close but not identical (CPU and GPU arithmetic differ, so a 3B model can choose differently): unanswerable refused 4/4, answerable wrongly refused 4/16; outcomes differ from the GPU run on q10, q16.</p>
+<table>
+<tr><th>Category</th><th class="n">n</th><th class="n">Gold in retrieved (hit@8)</th><th class="n">Gold in retained</th></tr>
+<tr><td>single_passage</td><td class="n">9</td><td class="n">9/9</td><td class="n">8/9</td></tr>
+<tr><td>table_lookup</td><td class="n">4</td><td class="n">4/4</td><td class="n">4/4</td></tr>
+<tr><td>multi_document</td><td class="n">2</td><td class="n">2/2</td><td class="n">2/2</td></tr>
+<tr><td>version_dependent</td><td class="n">1</td><td class="n">1/1</td><td class="n">0/1</td></tr>
+<tr><td><b>All answerable</b></td><td class="n">16</td><td class="n"><b>16/16</b></td><td class="n"><b>14/16</b></td></tr>
+</table>
+<p class="note">hit@8 counts the first attempt's 8 passages only. "Retained" means a gold chunk survived grading
+on any attempt. For multi_document, one gold passage counts as a hit; q15 retained only the json half.</p>
+<table>
+<tr><th>Unanswerable refused</th><th>Answerable wrongly refused</th><th>Terminations (20)</th><th>Latency, GTX 1650: median / p95</th><th>Latency, CPU 4 threads (target): median / p95</th></tr>
+<tr><td><b>4/4</b></td><td><b>2/16</b> (q06, q08)</td><td>14 answered, 5 refused_no_answer, 1 retry_limit</td><td>20.9 s / 35.9 s</td><td><b>85.1 s / 176.3 s</b></td></tr>
+</table>
+<p><b>Groundedness (manual pass by the author, claim by claim against the cited passages).</b> All 14 answered
+questions passed the automatic checks and the LLM verifier. The manual pass is stricter:</p>
+<table>
+<tr><th>Verdict</th><th>Questions</th><th>Detail</th></tr>
+<tr><td>Correct, every claim supported by a cited passage</td><td>q02 q03 q05 q07 q09 q10 q11 q12 (8)</td><td>Table answers cite the exact row, e.g. q10 &rarr; <code>datetime.rst:2425-2427</code>.</td></tr>
+<tr><td>Correct, but a claim is not in the cited passage</td><td>q01 q13 (2)</td><td>q01: "useful for regression tests" is true (json.rst:447) but not in the cited intro chunk. q13: the AM/PM row was retained but the answer cites a neighbouring note.</td></tr>
+<tr><td>Supported but incomplete</td><td>q04 q14 (2)</td><td>q04 omits mounting the <code>HTTPAdapter</code>; q14 omits that requests also has a separate read timeout.</td></tr>
+<tr><td>Partly unsupported</td><td>q15 (1)</td><td>The requests half ("requests raises a JSONDecodeError") cites only json.rst passages.</td></tr>
+<tr><td>Wrong</td><td>q16 (1)</td><td>States the opposite of the deprecation note, and passed verification. See below.</td></tr>
+</table>
+<p>So 8 of 14 answers are fully grounded, 4 more are right with a citation or completeness defect, and 2 contain a
+claim their citations do not support. The verifier's pass rate (14/14) overstates groundedness; that is the
+single most important limitation of this system.</p>
+
+<h3>Three traced failures</h3>
+<p><b>q16, version_dependent: wrong answer, verified.</b> Retrieved: <code>urllib.request#0003</code>,
+<code>#0002</code>, <code>#0004</code> (gold: the <code>.. deprecated:: 3.6</code> note) at ranks 1&ndash;3. Grader:
+copied evidence only from <code>#0002</code> ("The optional <i>cafile</i> and <i>capath</i> parameters specify a set
+of trusted CA certificates..."); for <code>#0004</code> it returned nothing. Generator: from a passage that describes
+the parameters and says nothing about deprecation, it concluded they are "still recommended". Verifier: the LLM
+check accepted it. <i>Single fix:</i> <code>urlopen</code> is one entry split into three parts; show the generator
+every part's <code>version_notes</code> (already in chunk metadata) whenever any part is retained.</p>
+<p><b>q08, single_passage: wrongly refused.</b> Retrieved: the gold chunk <code>datetime#0046</code> at rank 1.
+Grader: no evidence from any of 8 passages; after a rewrite, 8 more, one irrelevant sentence retained. Generator:
+NOT_IN_DOCS, so refused. The answer is the one-line example <code>date.fromisoformat('20191204')</code>, and the
+grader prompt says "copy prose, not a code example". I added that rule to stop the model copying a whole code
+block (which tripped Ollama's repeat limit on q04); it also blocks this. <i>Single fix:</i> allow one line of code
+as evidence and forbid only multi-line blocks.</p>
+<p><b>q15, multi_document: half unsupported.</b> Retrieved: requests <code>quickstart#0008</code> (gold) at rank 1
+and json gold chunks at ranks 3 and 8. Grader: no evidence from <code>quickstart#0008</code>, then 3 json passages
+carried evidence, so grading stopped after 4 of 8. Generator: answered both halves from json passages alone. The
+verifier did not notice the requests claim had no requests citation. <i>Single fix:</i> when the question names
+two libraries, do not stop grading until each has a retained passage.</p>
+<p class="note">Also wrong: q06 (refused). The grader retained the gold passage with the right evidence ("the success
+of the call to <code>r.json()</code> does <b>not</b> indicate the success of the response") and the generator still
+said NOT_IN_DOCS, a 3B model being over-cautious on a yes/no question.</p>
+<p class="note"><b>On q19</b> ("What is <code>Response.elapsed</code>?"): the local <code>api.rst</code> documents
+<code>Response</code> with <code>.. autoclass::</code>, which Sphinx fills from docstrings when it builds the website.
+The rendered page does describe <code>elapsed</code>; the reST copy this assistant holds does not, so refusal is
+correct for this corpus. Autodoc-generated content is a known gap in using the reST sources.</p>
+
+<h2>6. What the local setup cost, and what I would change</h2>
+<p><b>Quality.</b> A 3B model is the binding constraint, not retrieval: the gold passage is in the top 8 for
+16/16 answerable questions, yet three answers are incomplete and one is wrong. A 3B grader cannot judge
+sufficiency over 8 passages at once, which forced the one-passage-per-call design. It is weak at negation and
+synthesis (q16), and it does not notice when half of a two-part question is uncovered (q15). The LLM verifier
+passes what the generator writes too readily; the deterministic checks caught more than the model did.</p>
+<p><b>Time.</b> Grading is 71% (CPU) and 74% (GPU) of request time: up to 8 model calls, each reading a passage from
+scratch. On the target (4 CPU threads), prompt reading runs at about 54 tokens/s and generation at about
+7 tokens/s, so one grader call costs 10&ndash;16 s. What I cut to get closer: grading stops after 3 passages
+with evidence, retries never re-grade a passage, prompts are capped at 4,096 tokens, replies are capped at 160
+tokens and constrained to a schema, and the model is called on 127.0.0.1 rather than <code>localhost</code>.
+That last one is worth about 2 s per call on Windows, ~20 s per request. Measured on 4 CPU threads: median 85 s, p95 176 s per request, so the 20 s budget is missed by a factor of about 4. The same code on the GTX 1650 has a median of 20.9 s.</p>
+<p><b>With a GPU</b> (a datacenter card, not this laptop's GTX 1650): grade the 8 passages as one batched
+request (Ollama <code>num_parallel</code>/vLLM), which removes most of the grading time, and move to a 7B&ndash;8B
+model for the generator and verifier, where most remaining errors are. <b>With two more weeks:</b> fix the three
+traced failures (version notes travel with every part of an entry; one-line code examples count as evidence;
+per-document coverage before grading stops); a verifier that checks each clause of the answer against one
+retained passage; a held-out question set so the fusion weight and prompts are not tuned on the evaluation
+questions; and a second annotator for the groundedness pass.</p>
+
+</body>
+</html>

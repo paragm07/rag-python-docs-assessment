@@ -7,10 +7,13 @@ server is a config change in ``config.yaml``; no code changes.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Protocol
 
 import httpx
 import numpy as np
+
+logger = logging.getLogger("ragdocs")
 
 
 class ModelUnavailable(Exception):
@@ -18,7 +21,9 @@ class ModelUnavailable(Exception):
 
 
 class LLM(Protocol):
-    def generate(self, prompt: str, *, json_mode: bool = False) -> str: ...
+    def generate(self, prompt: str, *, schema: dict[str, Any] | None = None) -> str:
+        """Complete ``prompt``. With ``schema``, the reply is JSON matching that JSON schema."""
+        ...
 
 
 class Embedder(Protocol):
@@ -31,21 +36,32 @@ class OllamaLLM:
         self.base_url = cfg["base_url"].rstrip("/")
         self.temperature = cfg.get("temperature", 0.0)
         self.num_ctx = cfg.get("num_ctx", 4096)
+        self.max_output_tokens = cfg.get("max_output_tokens", -1)
         self.timeout = cfg.get("timeout_s", 90)
+        self.options = dict(cfg.get("options") or {})
 
-    def generate(self, prompt: str, *, json_mode: bool = False) -> str:
+    def generate(self, prompt: str, *, schema: dict[str, Any] | None = None) -> str:
         payload: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": self.temperature, "num_ctx": self.num_ctx},
+            "options": {**self.options, "temperature": self.temperature, "num_ctx": self.num_ctx,
+                        "num_predict": self.max_output_tokens},
         }
-        if json_mode:
-            payload["format"] = "json"
+        if schema is not None:
+            payload["format"] = schema
         try:
             resp = httpx.post(f"{self.base_url}/api/generate", json=payload, timeout=self.timeout)
-            resp.raise_for_status()
         except (httpx.HTTPError, OSError) as exc:
+            raise ModelUnavailable(f"LLM {self.model} unavailable: {exc}") from exc
+        if resp.status_code == 500 and "prediction aborted" in resp.text:
+            # Ollama stopped a degenerate reply (e.g. "token repeat limit reached"). The model is
+            # up; this one reply is unusable. Return nothing and let the node treat it as empty.
+            logger.warning("LLM reply aborted by Ollama: %s", resp.text[:200])
+            return ""
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
             raise ModelUnavailable(f"LLM {self.model} unavailable: {exc}") from exc
         return resp.json().get("response", "")
 
@@ -55,12 +71,13 @@ class OllamaEmbedder:
         self.model = cfg["model"]
         self.base_url = cfg["base_url"].rstrip("/")
         self.timeout = cfg.get("timeout_s", 60)
+        self.options = dict(cfg.get("options") or {})
 
     def embed(self, texts: list[str]) -> np.ndarray:
         try:
             resp = httpx.post(
                 f"{self.base_url}/api/embed",
-                json={"model": self.model, "input": texts},
+                json={"model": self.model, "input": texts, "options": self.options},
                 timeout=self.timeout,
             )
             resp.raise_for_status()

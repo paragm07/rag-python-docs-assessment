@@ -1,0 +1,360 @@
+{
+  "top_k_for_hit_at_k": 8,
+  "retrieval_by_category": {
+    "single_passage": {
+      "n": 9,
+      "n_hit_retrieved": 9,
+      "n_hit_retained": 8,
+      "hit_at_k_retrieved": 1.0,
+      "hit_retained": 0.889
+    },
+    "table_lookup": {
+      "n": 4,
+      "n_hit_retrieved": 4,
+      "n_hit_retained": 4,
+      "hit_at_k_retrieved": 1.0,
+      "hit_retained": 1.0
+    },
+    "multi_document": {
+      "n": 2,
+      "n_hit_retrieved": 2,
+      "n_hit_retained": 2,
+      "hit_at_k_retrieved": 1.0,
+      "hit_retained": 1.0
+    },
+    "version_dependent": {
+      "n": 1,
+      "n_hit_retrieved": 1,
+      "n_hit_retained": 0,
+      "hit_at_k_retrieved": 1.0,
+      "hit_retained": 0.0
+    }
+  },
+  "refusals": {
+    "unanswerable_refused": 4,
+    "unanswerable_total": 4,
+    "answerable_wrongly_refused": 2,
+    "answerable_total": 16
+  },
+  "termination_counts": {
+    "answered": 14,
+    "refused_no_answer": 5,
+    "retry_limit": 1
+  },
+  "verified_counts": {
+    "true": 14,
+    "false": 0
+  },
+  "latency_s": {
+    "median": 20.938,
+    "p95": 35.892,
+    "max": 38.214
+  },
+  "automatic_checks_failed": [],
+  "headline": {
+    "retrieval_hit_at_k_answerable": 1.0,
+    "retrieval_hit_retained_answerable": 0.875,
+    "unanswerable_refused": "4/4",
+    "answerable_wrongly_refused": "2/16",
+    "latency_median_s": 20.938,
+    "latency_p95_s": 35.892
+  },
+  "per_question": [
+    {
+      "id": "q01",
+      "category": "single_passage",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 32.839,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q02",
+      "category": "single_passage",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 15.148,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q03",
+      "category": "single_passage",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 15.881,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q04",
+      "category": "single_passage",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 22.504,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q05",
+      "category": "single_passage",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 23.759,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q06",
+      "category": "single_passage",
+      "refused": true,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 16.659,
+      "termination": "refused_no_answer",
+      "retries": 0,
+      "verified": null,
+      "checks": null
+    },
+    {
+      "id": "q07",
+      "category": "single_passage",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 22.556,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q08",
+      "category": "single_passage",
+      "refused": true,
+      "hit_retrieved": true,
+      "hit_retained": false,
+      "latency_s": 38.214,
+      "termination": "refused_no_answer",
+      "retries": 1,
+      "verified": null,
+      "checks": null
+    },
+    {
+      "id": "q09",
+      "category": "single_passage",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 20.517,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q10",
+      "category": "table_lookup",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 25.065,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q11",
+      "category": "table_lookup",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 21.234,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q12",
+      "category": "table_lookup",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 22.651,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q13",
+      "category": "table_lookup",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 20.642,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q14",
+      "category": "multi_document",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 13.568,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q15",
+      "category": "multi_document",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": true,
+      "latency_s": 16.308,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q16",
+      "category": "version_dependent",
+      "refused": false,
+      "hit_retrieved": true,
+      "hit_retained": false,
+      "latency_s": 19.52,
+      "termination": "answered",
+      "retries": 0,
+      "verified": true,
+      "checks": {
+        "citations_in_retained": true,
+        "backticked_identifiers_in_cited_text": true,
+        "unsupported_identifiers": []
+      }
+    },
+    {
+      "id": "q17",
+      "category": "unanswerable",
+      "refused": true,
+      "hit_retrieved": null,
+      "hit_retained": null,
+      "latency_s": 20.075,
+      "termination": "refused_no_answer",
+      "retries": 0,
+      "verified": null,
+      "checks": null
+    },
+    {
+      "id": "q18",
+      "category": "unanswerable",
+      "refused": true,
+      "hit_retrieved": null,
+      "hit_retained": null,
+      "latency_s": 15.722,
+      "termination": "refused_no_answer",
+      "retries": 0,
+      "verified": null,
+      "checks": null
+    },
+    {
+      "id": "q19",
+      "category": "unanswerable",
+      "refused": true,
+      "hit_retrieved": null,
+      "hit_retained": null,
+      "latency_s": 26.981,
+      "termination": "refused_no_answer",
+      "retries": 1,
+      "verified": null,
+      "checks": null
+    },
+    {
+      "id": "q20",
+      "category": "unanswerable",
+      "refused": true,
+      "hit_retrieved": null,
+      "hit_retained": null,
+      "latency_s": 35.892,
+      "termination": "retry_limit",
+      "retries": 2,
+      "verified": null,
+      "checks": null
+    }
+  ]
+}

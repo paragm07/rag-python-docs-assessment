@@ -1,10 +1,11 @@
 """Run the workflow over data/questions.jsonl and write results.jsonl.
 
-    python evaluate.py [--config config.yaml]
+    python evaluate.py [--config config.yaml] [--out-dir data]
 
 Writes:
   data/results.jsonl      one line per question, the schema in the brief
   data/eval_summary.json  retrieval hit rates, refusal counts, latency, automatic checks
+  data/traces.jsonl       per question, every node visit in order with its seconds and decisions
   data/groundedness_review.md  answered questions listed for the manual groundedness pass
 
 Gold matching: a chunk matches a gold passage when it comes from the same file and
@@ -24,7 +25,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from ragdocs.config import load_config, resolve
-from ragdocs.graph import build_graph, run_question
+from ragdocs.graph import build_graph, run_question, unsupported_identifiers
 from ragdocs.providers import ModelUnavailable, make_embedder, make_llm
 from ragdocs.retrieval import Index
 
@@ -44,10 +45,8 @@ def gold_chunk_ids(index: Index, passage: dict) -> set[str]:
 def automatic_checks(index: Index, result: dict) -> dict:
     """Mechanical groundedness checks. The manual pass is separate."""
     cited = result["citations"]
-    cited_text = norm(" ".join(index.get(c).text for c in cited)) if cited else ""
     bad_citations = [c for c in cited if c not in result["retained"]]
-    missing_ids = [t for t in re.findall(r"`([^`]+)`", result["answer"])
-                   if norm(t.rstrip("()").strip()) and norm(t.rstrip("()").strip()) not in cited_text]
+    missing_ids = unsupported_identifiers(result["answer"], " ".join(index.get(c).text for c in cited))
     return {"citations_in_retained": not bad_citations,
             "backticked_identifiers_in_cited_text": not missing_ids,
             "unsupported_identifiers": missing_ids}
@@ -56,9 +55,10 @@ def automatic_checks(index: Index, result: dict) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
+    ap.add_argument("--out-dir", default="data", help="where the outputs go (questions are always read from data/)")
     args = ap.parse_args()
     cfg = load_config(args.config)
-    data_dir = resolve(cfg, "data")
+    data_dir = resolve(cfg, args.out_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
 
     questions = [json.loads(line) for line in resolve(cfg, "data/questions.jsonl").read_text().splitlines()
@@ -68,7 +68,7 @@ def main() -> None:
     graph = build_graph(cfg, index, make_llm(cfg["models"]["llm"]))
     top_k = cfg["retrieval"]["top_k"]
 
-    rows, per_q = [], []
+    rows, per_q, traces = [], [], []
     for q in questions:
         started = time.perf_counter()
         try:
@@ -85,6 +85,7 @@ def main() -> None:
                "verified": res["verified"], "retries": res["retries"],
                "termination": res["termination"], "latency_s": latency}
         rows.append(row)
+        traces.append({"id": q["id"], "question": q["question"], "latency_s": latency, "trace": res["trace"]})
 
         gold = [p for p in q["gold_passages"]]
         gold_ids = [gold_chunk_ids(index, p) for p in gold]
@@ -102,6 +103,9 @@ def main() -> None:
     with (data_dir / "results.jsonl").open("w", encoding="utf-8") as fh:
         for row in rows:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    with (data_dir / "traces.jsonl").open("w", encoding="utf-8") as fh:
+        for t in traces:
+            fh.write(json.dumps(t, ensure_ascii=False) + "\n")
 
     summary = summarise(per_q, top_k)
     (data_dir / "eval_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -110,14 +114,14 @@ def main() -> None:
 
 
 def summarise(per_q: list[dict], top_k: int) -> dict:
-    by_cat: dict[str, dict] = defaultdict(lambda: {"n": 0, "hit_retrieved": 0, "hit_retained": 0})
+    by_cat: dict[str, dict] = defaultdict(lambda: {"n": 0, "n_hit_retrieved": 0, "n_hit_retained": 0})
     for r in per_q:
         if r["category"] not in ANSWERABLE:
             continue
         c = by_cat[r["category"]]
         c["n"] += 1
-        c["hit_retrieved"] += int(bool(r["hit_retrieved"]))
-        c["hit_retained"] += int(bool(r["hit_retained"]))
+        c["n_hit_retrieved"] += int(bool(r["hit_retrieved"]))
+        c["n_hit_retained"] += int(bool(r["hit_retained"]))
     answerable = [r for r in per_q if r["category"] in ANSWERABLE]
     unanswerable = [r for r in per_q if r["category"] == "unanswerable"]
     latencies = sorted(r["latency_s"] for r in per_q)
@@ -126,8 +130,8 @@ def summarise(per_q: list[dict], top_k: int) -> dict:
     return {
         "top_k_for_hit_at_k": top_k,
         "retrieval_by_category": {k: {**v,
-                                      "hit_at_k_retrieved": round(v["hit_retrieved"] / v["n"], 3),
-                                      "hit_retained": round(v["hit_retained"] / v["n"], 3)}
+                                      "hit_at_k_retrieved": round(v["n_hit_retrieved"] / v["n"], 3),
+                                      "hit_retained": round(v["n_hit_retained"] / v["n"], 3)}
                                   for k, v in by_cat.items()},
         "refusals": {
             "unanswerable_refused": sum(r["refused"] for r in unanswerable),

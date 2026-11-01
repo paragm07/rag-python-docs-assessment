@@ -34,6 +34,44 @@ def test_grid_table_is_one_chunk_with_caption():
     assert tables[0].section == "Format Codes"
 
 
+def test_long_table_splits_between_rows_and_repeats_header():
+    rows = "".join(f"| ``%{c}``  | Meaning of {c} {'x' * 40} |\n+--------+{'-' * 58}+\n" for c in "abcdefghij")
+    text = (
+        "Codes\n=====\n\n"
+        "Caption for the code table.\n\n"
+        f"+--------+{'-' * 58}+\n"
+        f"| Code   | Meaning{' ' * 51}|\n"
+        f"+========+{'=' * 58}+\n" + rows
+    )
+    chunks = chunk_text(text, doc="d", version="1", file="d/t.rst", max_chunk_chars=1200,
+                        max_entry_chars=2000, max_table_chars=500)
+    tables = [c for c in chunks if c.chunk_type == "table"]
+    assert len(tables) > 1
+    assert all("| Code" in t.text and "Caption for the code table." in t.text for t in tables)
+    assert all(t.text.rstrip().endswith("+") for t in tables), "a piece must end on a row border"
+    joined = "".join(t.text for t in tables)
+    assert all(joined.count(f"``%{c}``") == 1 for c in "abcdefghij"), "each row in exactly one piece"
+    assert tables[0].start_line < tables[1].start_line
+
+
+def test_grid_rows_are_linearized_with_their_headers():
+    from ragdocs.chunking import linearize_tables
+    text = (
+        "Codes:\n"
+        "+-----------+------------------+-------------+\n"
+        "| Directive | Meaning          | Example     |\n"
+        "+===========+==================+=============+\n"
+        "| ``%j``    | Day of the year  | 001, 002,   |\n"
+        "|           | as a number.     | ..., 366    |\n"
+        "+-----------+------------------+-------------+\n"
+    )
+    out = linearize_tables(text)
+    assert out.splitlines() == [
+        "Codes:",
+        "Directive: ``%j``; Meaning: Day of the year as a number.; Example: 001, 002, ..., 366",
+    ]
+
+
 def test_function_entry_keeps_signature_and_version_note():
     text = (
         ".. function:: dumps(obj, *, sort_keys=False)\n\n"

@@ -16,32 +16,42 @@ index:
   path: data/index/ragdocs.sqlite
   max_chunk_chars: 1200     # prose chunks are grouped up to this size
   max_entry_chars: 2000     # a function entry longer than this is split by paragraph
+  max_table_chars: 1200     # a grid table longer than this is split between rows; header repeated
 
 retrieval:
-  top_k: 8                  # passages returned per attempt
+  top_k: 8                  # passages graded per attempt; a retry grades the next 8 not yet seen
   rrf_k: 60                 # reciprocal rank fusion constant
+  bm25_weight: 2.0          # BM25 list weight in the fusion (dense = 1.0); see report section 3
   use_dense: true           # hybrid BM25 + dense. Needs embeddings in the index.
-  widen_top_k: 16           # top_k used on the second recovery attempt
 
 models:
   llm:
     provider: ollama
     model: "qwen2.5:3b-instruct"
-    base_url: "http://localhost:11434"
+    base_url: "http://127.0.0.1:11434"  # not localhost: on Windows it tries IPv6 first, +2 s a call
     temperature: 0.0
     num_ctx: 4096
+    max_output_tokens: 160  # Ollama num_predict; replies are short JSON, this bounds a runaway reply
     timeout_s: 90
+    # Ollama options go in an `options:` map here and are passed as-is. None by default:
+    # Ollama uses a GPU when there is one and the CPU otherwise. config.cpu.yaml pins
+    # the target server (num_gpu: 0, num_thread: 4) for the CPU latency measurement.
   embedder:
     provider: ollama
     model: "nomic-embed-text"
-    base_url: "http://localhost:11434"
+    base_url: "http://127.0.0.1:11434"  # not localhost: on Windows it tries IPv6 first, +2 s a call
     timeout_s: 60
 
 workflow:
-  max_retries: 2            # corrective loops (rewrite / widen retrieval) per request
+  max_retries: 2            # corrective loops (rewrite query, grade the next passages) per request
   max_verify_retries: 1     # regenerations after a failed verification
-  max_passages_to_model: 6  # retained passages shown to the generator
+  max_passages_to_model: 3  # grading stops once this many passages carry evidence
+  min_evidence_chars: 12    # shorter grader evidence is treated as no evidence
+  evidence_match_chars: 60  # this many leading chars of the evidence must be in the passage
+  max_passage_chars: 2000   # per-passage cap in prompts; >= max_entry_chars so no chunk is cut
+  graph_step_limit: 25      # LangGraph recursion limit; the longest legal path is 15 steps
 
 api:
   max_question_chars: 500
-  request_timeout_s: 120    # hard limit on one /query; returns 504 if exceeded
+  request_timeout_s: 300    # hard limit on one /query (504 after). CPU worst case measured ~200 s
+  trace_log: data/api_traces.jsonl  # one line per /query: node visits with timings

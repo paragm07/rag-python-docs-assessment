@@ -35,12 +35,45 @@ def test_missing_field_is_422(client):
     assert r.status_code == 422
 
 
-def test_model_down_is_503_not_500(client):
-    # No LLM server runs during tests, so the call fails and must come back as 503.
+@pytest.fixture
+def swap_state():
+    """Temporarily replace entries in the service state; restore them afterwards."""
+    from ragdocs import api
+    saved = dict(api.STATE)
+    yield api.STATE
+    api.STATE.clear()
+    api.STATE.update(saved)
+
+
+def test_model_down_is_503_not_500(client, swap_state):
+    # Point both models at a port nothing listens on, whether or not Ollama is running.
+    from ragdocs.graph import build_graph
+    from ragdocs.providers import make_embedder, make_llm
+    from ragdocs.retrieval import Index
+    cfg = swap_state["cfg"]
+    dead = "http://127.0.0.1:9"
+    index = Index(INDEX_PATH, make_embedder({**cfg["models"]["embedder"], "base_url": dead}),
+                  cfg["retrieval"]["use_dense"])
+    swap_state["graph"] = build_graph(cfg, index, make_llm({**cfg["models"]["llm"], "base_url": dead}))
     r = client.post("/query", json={"question": "How do I set a timeout in requests?"})
     assert r.status_code == 503
     assert r.json()["error"] == "model_unavailable"
     assert "Traceback" not in r.text
+
+
+def test_slow_workflow_is_504_with_a_body(client, swap_state):
+    import time
+
+    class Slow:
+        def stream(self, *args, **kwargs):
+            time.sleep(3)
+            return iter(())
+
+    swap_state["graph"] = Slow()
+    swap_state["cfg"] = {**swap_state["cfg"], "api": {**swap_state["cfg"]["api"], "request_timeout_s": 0.5}}
+    r = client.post("/query", json={"question": "How do I set a timeout in requests?"})
+    assert r.status_code == 504
+    assert r.json()["termination"] == "timeout" and r.json()["refused"] is True
 
 
 def test_documents_lists_both_sources(client):

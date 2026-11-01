@@ -6,9 +6,11 @@ Three kinds of chunk, chosen per block of the source:
   body. Kept whole so a signature never loses its parameter descriptions. An
   entry longer than ``max_entry_chars`` is split on blank lines, and every
   piece repeats the signature line.
-* ``table``  one grid table, kept whole, plus the paragraph just before it
-  (the caption that says what the table is). Cutting a table mid-row destroys
-  the cell-to-header mapping that table_lookup questions rely on.
+* ``table``  one grid table plus the paragraph just before it (the caption
+  that says what the table is). Cutting a table mid-row destroys the
+  cell-to-header mapping that table_lookup questions rely on, so a table
+  longer than ``max_table_chars`` is split only between rows, and every piece
+  repeats the caption and the header row.
 * ``prose``  consecutive paragraphs under the same section, grouped up to
   ``max_chunk_chars``. Paragraphs are never split.
 
@@ -32,6 +34,7 @@ VERSION_RE = re.compile(
     r"^\s*\.\. (versionadded|versionchanged|deprecated|versionremoved)::\s*(\S+)\s*(.*)$"
 )
 GRID_LINE_RE = re.compile(r"^\s*[+|]")
+GRID_BORDER_RE = re.compile(r"^\s*\+[-=+]+\+\s*$")
 NAME_RE = re.compile(r"^([\w.]+)")
 
 
@@ -123,6 +126,92 @@ def _pack(blocks: list[list[str]], limit: int) -> list[list[str]]:
     return groups
 
 
+def linearize_tables(text: str) -> str:
+    """Rewrite every grid table in ``text`` as one line per row of ``Header: cell`` pairs.
+
+    A grid row spans several physical lines between ``|`` borders, which neither
+    an embedding model nor a 3B model reads well: asked to copy the ``%j`` row,
+    the model copies prose instead. One line per row keeps each value next to its
+    header. The source text is kept for citations; this view is what gets embedded,
+    searched and shown to the model.
+    """
+    lines = text.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        if not GRID_BORDER_RE.match(lines[i]):
+            out.append(lines[i])
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and lines[j].strip() and GRID_LINE_RE.match(lines[j]):
+            j += 1
+        out += _linearize_grid(lines[i:j])
+        i = j
+    return "\n".join(out)
+
+
+def _linearize_grid(grid: list[str]) -> list[str]:
+    border = grid[0]
+    cols = [k for k, ch in enumerate(border) if ch == "+"]
+    rows: list[list[str]] = []
+    cur: list[list[str]] | None = None
+    header: list[str] | None = None
+    for line in grid[1:]:
+        if GRID_BORDER_RE.match(line):
+            if cur is not None:
+                rows.append([" ".join(" ".join(c).split()) for c in cur])
+            if "=" in line and header is None and rows:
+                header = rows.pop()
+            cur = None
+            continue
+        cur = cur or [[] for _ in range(len(cols) - 1)]
+        for c in range(len(cols) - 1):
+            cell = line[cols[c] + 1:cols[c + 1]] if len(line) > cols[c] else ""
+            if cell.strip():
+                cur[c].append(cell.strip())
+    if cur is not None:
+        rows.append([" ".join(" ".join(c).split()) for c in cur])
+    indent = border[:len(border) - len(border.lstrip())]
+    if header is None:
+        return [indent + "; ".join(cell for cell in row if cell) for row in rows]
+    return [indent + "; ".join(f"{h}: {cell}" for h, cell in zip(header, row) if cell) for row in rows]
+
+
+def _table_pieces(grid: list[str], first_line: int, limit: int) -> list[tuple[list[str], int, int]]:
+    """Split a grid table between rows. Each piece is (lines, start_line, end_line).
+
+    The header (everything up to the ``+===+`` rule, or the top border if there
+    is none) is repeated at the top of every piece. Line numbers are 1-based and
+    cover the rows the piece adds, so a citation lands on those rows.
+    """
+    header_end = next((k for k, ln in enumerate(grid) if "=" in ln and GRID_BORDER_RE.match(ln)), 0)
+    header = grid[:header_end + 1]
+    rows: list[tuple[int, int]] = []  # [start, end) indexes into grid, each ending on a border line
+    k = header_end + 1
+    while k < len(grid):
+        start = k
+        while k < len(grid) and not GRID_BORDER_RE.match(grid[k]):
+            k += 1
+        k = min(k + 1, len(grid))
+        rows.append((start, k))
+    pieces: list[tuple[list[str], int, int]] = []
+    budget = max(limit - sum(len(x) + 1 for x in header), 1)
+    cur: list[tuple[int, int]] = []
+    size = 0
+    for row in rows:
+        row_size = sum(len(x) + 1 for x in grid[row[0]:row[1]])
+        if cur and size + row_size > budget:
+            pieces.append(cur)
+            cur, size = [], 0
+        cur.append(row)
+        size += row_size
+    if cur:
+        pieces.append(cur)
+    return [(header + [ln for s, e in p for ln in grid[s:e]],
+             first_line + p[0][0], first_line + p[-1][1] - 1) for p in pieces]
+
+
 def chunk_text(
     text: str,
     *,
@@ -131,7 +220,9 @@ def chunk_text(
     file: str,
     max_chunk_chars: int,
     max_entry_chars: int,
+    max_table_chars: int | None = None,
 ) -> list[Chunk]:
+    table_limit = max_table_chars or max_chunk_chars
     lines = text.splitlines()
     n = len(lines)
     stem = file.rsplit(".", 1)[0]
@@ -206,6 +297,7 @@ def chunk_text(
                 "kind": "table", "start": cap_start,
                 "end": j, "section": current_section(), "entry": None,
                 "header": "", "body": (caption.splitlines() if caption else []) + block,
+                "caption": caption.splitlines() if caption else [], "grid": block, "grid_start": i + 1,
             })
             i = j
             prev_prose = None
@@ -242,7 +334,7 @@ def chunk_text(
             chunk_id=f"{stem}#{seq:04d}", doc=doc, version=version, file=file,
             section=section, anchor=anchor, entry=entry, chunk_type=kind,
             start_line=start, end_line=end, version_notes=_version_notes(raw),
-            text=raw, index_text=f"{prefix}\n{raw}",
+            text=raw, index_text=f"{prefix}\n{linearize_tables(raw)}",
         ))
         seq += 1
 
@@ -266,7 +358,12 @@ def chunk_text(
             continue
         flush_prose()
         if u["kind"] == "table":
-            emit("table", u["body"], u["start"], u["end"], u["section"], None, "")
+            if len("\n".join(u["body"])) <= table_limit:
+                emit("table", u["body"], u["start"], u["end"], u["section"], None, "")
+            else:
+                limit = table_limit - len("\n".join(u["caption"]))
+                for grid_lines, start, end in _table_pieces(u["grid"], u["grid_start"], limit):
+                    emit("table", u["caption"] + grid_lines, start, end, u["section"], None, "")
         else:
             body_text = "\n".join(u["body"]).rstrip()
             if len(body_text) + len(u["header"]) <= max_entry_chars:
@@ -288,4 +385,5 @@ def chunk_file(path: Path, *, doc: str, version: str, rel_file: str, cfg_index: 
         text, doc=doc, version=version, file=rel_file,
         max_chunk_chars=cfg_index["max_chunk_chars"],
         max_entry_chars=cfg_index["max_entry_chars"],
+        max_table_chars=cfg_index.get("max_table_chars"),
     )

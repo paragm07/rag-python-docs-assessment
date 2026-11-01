@@ -1,8 +1,8 @@
 """Local index: SQLite for chunks and embeddings, BM25 and dense search.
 
-Hybrid retrieval fuses two ranked lists with reciprocal rank fusion. BM25
-catches exact identifiers (``%j``, ``sort_keys``, ``r.json()``). Dense search
-catches paraphrases. Fusion needs no score calibration between the two.
+Hybrid retrieval fuses two ranked lists with weighted reciprocal rank fusion.
+BM25 catches exact identifiers (``%j``, ``sort_keys``, ``r.json()``). Dense
+search catches paraphrases. Fusion needs no score calibration between the two.
 """
 from __future__ import annotations
 
@@ -97,15 +97,19 @@ class Index:
         sims = self.dense @ qv
         return [self.order[i] for i in np.argsort(-sims)]
 
-    def search(self, query: str, top_k: int, rrf_k: int = 60) -> list[str]:
-        """Return the top_k chunk ids for the query, best first."""
-        lists = [self.bm25_rank(query)]
+    def search(self, query: str, top_k: int, rrf_k: int = 60, bm25_weight: float = 1.0) -> list[str]:
+        """Return the top_k chunk ids for the query, best first.
+
+        ``bm25_weight`` scales the BM25 list in the fusion. The dense model cannot
+        tell ``%j`` from ``%U``; BM25 can, so table rows need the extra weight.
+        """
+        lists = [(bm25_weight, self.bm25_rank(query))]
         if self.dense_ready:
-            lists.append(self.dense_rank(query))
+            lists.append((1.0, self.dense_rank(query)))
         fused: dict[str, float] = {}
-        for ranked in lists:
+        for weight, ranked in lists:
             for rank, cid in enumerate(ranked[: max(top_k * 4, 50)], start=1):
-                fused[cid] = fused.get(cid, 0.0) + 1.0 / (rrf_k + rank)
+                fused[cid] = fused.get(cid, 0.0) + weight / (rrf_k + rank)
         return [cid for cid, _ in sorted(fused.items(), key=lambda kv: -kv[1])][:top_k]
 
     def get(self, chunk_id: str) -> ChunkRow:

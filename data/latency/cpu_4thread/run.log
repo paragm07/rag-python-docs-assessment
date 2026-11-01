@@ -1,0 +1,28 @@
+q01 single_passage     refused=False term=answered           retries=0 118.793s
+q02 single_passage     refused=False term=answered           retries=0 58.689s
+q03 single_passage     refused=False term=answered           retries=0 62.6s
+q04 single_passage     refused=False term=answered           retries=0 84.925s
+q05 single_passage     refused=False term=answered           retries=0 61.452s
+q06 single_passage     refused=True  term=retry_limit        retries=2 138.278s
+q07 single_passage     refused=False term=answered           retries=0 92.381s
+q08 single_passage     refused=True  term=refused_no_answer  retries=0 85.193s
+q09 single_passage     refused=False term=answered           retries=0 225.497s
+q10 table_lookup       refused=True  term=refused_no_answer  retries=1 176.33s
+q11 table_lookup       refused=False term=answered           retries=0 111.797s
+q12 table_lookup       refused=False term=answered           retries=0 101.421s
+q13 table_lookup       refused=False term=answered           retries=0 73.525s
+q14 multi_document     refused=False term=answered           retries=0 59.604s
+q15 multi_document     refused=False term=answered           retries=0 81.257s
+q16 version_dependent  refused=True  term=retry_limit        retries=2 133.696s
+q17 unanswerable       refused=True  term=refused_no_answer  retries=0 68.724s
+q18 unanswerable       refused=True  term=refused_no_answer  retries=0 76.58s
+q19 unanswerable       refused=True  term=refused_no_answer  retries=1 92.858s
+q20 unanswerable       refused=True  term=refused_no_answer  retries=0 44.414s
+{
+  "retrieval_hit_at_k_answerable": 1.0,
+  "retrieval_hit_retained_answerable": 0.688,
+  "unanswerable_refused": "4/4",
+  "answerable_wrongly_refused": "4/16",
+  "latency_median_s": 85.059,
+  "latency_p95_s": 176.33
+}

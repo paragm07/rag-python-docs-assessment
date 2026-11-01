@@ -1,6 +1,7 @@
 """Load config.yaml. The file is the only place for tunables."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,8 @@ DEFAULT_CONFIG = ROOT / "config.yaml"
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
+    """Load ``path``, else ``$RAGDOCS_CONFIG``, else the committed config.yaml."""
+    path = path or os.environ.get("RAGDOCS_CONFIG")
     cfg_path = Path(path) if path else DEFAULT_CONFIG
     with cfg_path.open(encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)

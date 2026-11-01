@@ -17,7 +17,8 @@ the chunker parses directly.
 
 ## Setup (offline run)
 
-Tested on Python 3.13 (sandbox). Pinned versions are in `requirements.txt`.
+Requires Python 3.12 or newer (the pinned numpy 2.5 needs it). Tested on Python 3.13 in the build
+sandbox. Pinned versions are in `requirements.txt`.
 
 1. Install Ollama and pull the two local models named in `config.yaml`:
 
